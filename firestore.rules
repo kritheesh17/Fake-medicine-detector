@@ -1,0 +1,63 @@
+rules_version = '2';
+
+// Deploy with: firebase deploy --only firestore:rules
+//
+// These rules close the gap where DatabasePage.jsx only *hides* the
+// "Add medicine" form for non-admins in the UI — without rules like these,
+// any authenticated user could still call addMedicine()/addReport() directly
+// and write to collections they shouldn't.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function role() {
+      return isSignedIn()
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : null;
+    }
+
+    function isAdmin() {
+      return role() == "admin";
+    }
+
+    // Users can read/update their own profile. Nobody can self-promote their
+    // own role — only an admin can change the `role` field on any profile.
+    match /users/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow create: if isOwner(uid) && request.resource.data.role == "user";
+      allow update: if (isOwner(uid) && request.resource.data.role == resource.data.role)
+                    || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Medicine database: anyone signed in can read (needed for verification),
+    // only admins can write. This is the fix for the DatabasePage.jsx gap.
+    match /medicines/{medicineId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Reports: a user can create their own report and read their own reports.
+    // Only admins can read all reports or change report status.
+    match /reports/{reportId} {
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow read: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    // Scan history: users can only create/read their own entries.
+    match /history/{entryId} {
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+  }
+}
